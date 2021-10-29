@@ -109,7 +109,7 @@ public class Tensor implements Iterable<Float> {
             size *= dim;
         float [] data = new float[size];
         for(int i = 0; i < data.length; i++)
-            data[i] = (float) JavaML.random.nextGaussian()/100;
+            data[i] = (float) JavaML.random.nextGaussian();
         return new Tensor(data, shape);
     }
 
@@ -152,7 +152,7 @@ public class Tensor implements Iterable<Float> {
      */
     @Contract("_ -> new")
     public static @NotNull Tensor randLike(@NotNull Tensor t) {
-        return randn(t.shape);
+        return rand(t.shape);
     }
 
     /**
@@ -789,23 +789,18 @@ public class Tensor implements Iterable<Float> {
 
     @Override
     public String toString() {
-        // Ignore NaN and infinite values.
-        float maxAbs = reduce((x, y) -> {
-            if(Float.isNaN(y) || Float.isInfinite(y)) return x;
-            if(Float.isNaN(x) || Float.isInfinite(x)) return y;
-            return Math.max(Math.abs(x), Math.abs(y));
-        });
-        // This is the min of the absolute value, except we ignore zero values. However, if the tensor is zero, this
-        // will still be zero
-        float minAbs = reduce((x, y) -> {
-            if(y == 0 || Float.isNaN(y) || Float.isInfinite(y)) return x;
-            if(x == 0 || Float.isNaN(x) || Float.isInfinite(x)) return y;
-            return Math.min(Math.abs(x), Math.abs(y));
-        });
-        float min = nanmin();
-        float max = nanmax();
+        // We want min and max values to ignore NaN and infinite values
+        UnaryOperator<BinaryOperator<Float>> ignoreNanAndInf = (f) -> (x, y) -> {
+            if (Float.isNaN(y) || Float.isInfinite(y)) return x;
+            if (Float.isNaN(x) || Float.isInfinite(x)) return y;
+            return f.apply(x, y);
+        };
+        float maxAbs = reduce(ignoreNanAndInf.apply((x, y) -> Math.max(Math.abs(x), Math.abs(y))));
+        float minAbs = reduce(ignoreNanAndInf.apply((x, y) -> Math.min(Math.abs(x), Math.abs(y))));
+        float min = reduce(ignoreNanAndInf.apply(Math::min));
+        float max = reduce(ignoreNanAndInf.apply(Math::max));
         // Special cases for if there are no finite values in the Tensor
-        if(Float.isNaN(min) || Float.isInfinite(minAbs)) {
+        if(Float.isNaN(min) || Float.isInfinite(min)) {
             min = min < 0 ? -1 : 0;
             max = minAbs = maxAbs = 0;
         }
@@ -815,7 +810,7 @@ public class Tensor implements Iterable<Float> {
         if(min < 0)
             charsBefore = Math.max(charsBefore, (int)Math.floor(Math.log10(Math.abs(min)))+2);
 
-        boolean exponential = minAbs > 0 && (maxAbs >= 1e3 || minAbs <  1e-2);
+        boolean exponential = (maxAbs >= 1e3 || (minAbs > 0 && minAbs <  1e-2));
         if(exponential)
             charsBefore = min < 0 ? 2 : 1;
 
@@ -904,18 +899,19 @@ public class Tensor implements Iterable<Float> {
 
     /**
      * Determines the number of characters required after the decimal point to represent this float. Will never return
-     * a value larger than 8 as this is more precision than we need.
+     * a value larger than 5 as toString never provides more than 5 decimal places of accuracy
      *
      * @param f The float value to determine how many fractional character are required for
      * @param exponential If this value is going to be represented as an exponential or not
      * @return The number of characters needed after the decimal point.
      */
-    private int requiredCharsAfter(float f, boolean exponential) {
+    private static int requiredCharsAfter(float f, boolean exponential) {
         if(Float.isNaN(f) || Float.isInfinite(f))
             return 1;
+        f = Math.abs(f);
         if(exponential)
             f *= Math.pow(10, -(int)Math.floor(Math.log10(f)));
-        int fractionalPart = (int)Math.round((f - (int) f + 1) * Math.pow(10, 8));
+        int fractionalPart = (int)Math.round((f - (int) f + 1) * Math.pow(10, 5));
         while(fractionalPart % 10 == 0 && fractionalPart > 10)
             fractionalPart /= 10;
         return String.valueOf(fractionalPart).length() - 1;
@@ -929,9 +925,16 @@ public class Tensor implements Iterable<Float> {
             return false;
         if(!Arrays.equals(shape, tensor.shape))
             return false;
-        for(int i = 0; i < size; i++)
-            if(flatGet(i) != tensor.flatGet(i))
+        for(int[] i : indices) {
+            float f1 = get(i), f2 = tensor.get(i);
+            // These two conditions may seem identical, but they both have slightly different results.
+            // We want NaN == NaN, and 0.0 == -0.0
+            // Java equality returns false for NaN == NaN and true for 0.0 == -0.0
+            // .equals returns true for NaN == NaN and false for 0.0 == -0.0
+            // By using both methods we get the desired behaviour
+            if (f1 != f2 && !Float.valueOf(f1).equals(f2))
                 return false;
+        }
         return true;
     }
 
