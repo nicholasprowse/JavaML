@@ -10,12 +10,13 @@ import static org.junit.jupiter.api.Assertions.*;
 public class TensorTest {
 
     @Test void testGet() {
-        Tensor t = Tensor.from(new int[][] {{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}});
-        assertThrows(IllegalArgumentException.class, () -> t.get(1), "Not enough indices");
-        assertThrows(IllegalArgumentException.class, () -> t.get(0, 1, 0), "Too many indices");
-        assertThrows(IndexOutOfBoundsException.class, () -> t.get(2, 3), "Positive index out of bounds");
-        assertThrows(IndexOutOfBoundsException.class, () -> t.get(-5, 3), "Negative index out of bounds");
-        assertEquals(5, t.get(-3, -2), "Checking negative indices");
+        Tensor t = Tensor.from(new int[][][] {{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        assertThrows(IllegalArgumentException.class, () -> t.get(1, 1), "Not enough indices");
+        assertThrows(IllegalArgumentException.class, () -> t.get(0, 1, 0, 1), "Too many indices");
+        assertThrows(IndexOutOfBoundsException.class, () -> t.get(0, 2, 3), "Positive index out of bounds");
+        assertThrows(IndexOutOfBoundsException.class, () -> t.get(0, -5, 3), "Negative index out of bounds");
+        assertEquals(5, t.get(0, -3, -2), "Checking negative indices");
+        assertEquals(7, t.get(6));
     }
 
     @Test void testToString() {
@@ -88,7 +89,7 @@ public class TensorTest {
         assertEquals(-8, t.min());
         assertEquals(2, t.argmax());
         assertEquals(11, t.argmin());
-        t.flatSet(Float.NaN, 8);
+        t.set(Float.NaN, 8);
         assertEquals(Float.NaN, t.max());
         assertEquals(Float.NaN, t.min());
         assertEquals(8, t.argmax());
@@ -126,6 +127,20 @@ public class TensorTest {
         assertEquals(12, t.size());
         t = Tensor.zeros(3, 4, 5);
         assertEquals(60, t.size());
+    }
+
+    @Test void testDelete() {
+        Tensor t = Tensor.from(new int[][] {{1, 2, 3}, {4, 5, 6}});
+        assertEquals(Tensor.from(new int[][] {{4, 5, 6}}), t.delete(0, 0));
+        assertEquals(Tensor.from(new int[][] {{1, 2, 3}}), t.delete(0, 1));
+        assertEquals(Tensor.from(new int[] {0, 3}), t.delete(0, 0, 1).shape());
+        assertEquals(Tensor.from(new int[][] {{1}, {4}}), t.delete(1, 1, 2));
+        assertEquals(Tensor.from(new int[][] {{2}, {5}}), t.delete(1, 0, 2));
+        assertEquals(Tensor.from(new int[][] {{2}, {5}}), t.delete(-1, 0, -1));
+        assertEquals(Tensor.from(new int[][] {{}, {}}), t.delete(1, 0, 1, 2));
+        assertThrows(IllegalArgumentException.class, () -> t.delete(0, 1, 1));
+        assertThrows(IndexOutOfBoundsException.class, () -> t.delete(0, 2, 5));
+        assertThrows(IndexOutOfBoundsException.class, () -> t.delete(3, 0));
     }
 
     @Test void randomTestingFunction() {
