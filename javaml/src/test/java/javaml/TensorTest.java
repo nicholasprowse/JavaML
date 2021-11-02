@@ -107,13 +107,13 @@ public class TensorTest {
         assertEquals(Tensor.from(new float[] {-802, 2, max, 4, 107, 6, 7, -max, -1}), t.nanToNum(-1, 107, -802));
     }
 
-    @Test void abs() {
+    @Test void testAbs() {
         float inf = Float.POSITIVE_INFINITY, nan = Float.NaN;
         Tensor t = Tensor.from(new float[] {-inf, 2, -3.4f, 4, inf, 6, -7, -0, nan});
         assertEquals(Tensor.from(new float[] {inf, 2, 3.4f, 4, inf, 6, 7, 0, nan}), t.abs());
     }
 
-    @Test void reduce() {
+    @Test void testReduce() {
         assertEquals(720, Tensor.range(1, 7).reduce((x, y) -> x*y));
         assertEquals(72, Tensor.range(1, 7).reduce((x, y) -> x*y, 0.1f));
         assertEquals(21, Tensor.range(7).reduce(Float::sum));
@@ -143,7 +143,77 @@ public class TensorTest {
         assertThrows(IndexOutOfBoundsException.class, () -> t.delete(3, 0));
     }
 
-    @Test void randomTestingFunction() {
+    @Test void testSwapAxes() {
+        // (1, 4, 3)
+        Tensor t1 = Tensor.from(new int[][][] {{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        // (1, 3, 4)
+        Tensor t2 = Tensor.from(new int[][][] {{{1, 4, 7, 10}, {2, 5, 8, 11}, {3, 6, 9, 12}}});
+        // (4, 1, 3)
+        Tensor t3 = Tensor.from(new int[][][] {{{1, 2, 3}}, {{4, 5, 6}}, {{7, 8, 9}}, {{10, 11, 12}}});
+        // (3, 4, 1)
+        Tensor t4 = Tensor.from(new int[][][] {{{1}, {4}, {7}, {10}}, {{2}, {5}, {8}, {11}}, {{3}, {6}, {9}, {12}}});
+        assertEquals(t4, t1.swapAxes(0, 2));
+        assertEquals(t3, t1.swapAxes(0, 1));
+        assertEquals(t2, t1.swapAxes(1, 2));
+        assertEquals(t2, t1.swapAxes(1, -1));
+        assertEquals(t1.swapAxes(2, 1), t1.swapAxes(1, 2));
+        assertEquals(t1, t1.swapAxes(1, 1));
+        assertThrows(IndexOutOfBoundsException.class, () -> t1.swapAxes(-4, 1));
+    }
 
+    @Test void testPermute() {
+        // (1, 4, 3)
+        Tensor t1 = Tensor.from(new int[][][]{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        // (3, 1, 4)
+        Tensor t2 = Tensor.from(new int[][][]{{{1, 4, 7, 10}}, {{2, 5, 8, 11}}, {{3, 6, 9, 12}}});
+        // (4, 3, 1)
+        Tensor t3 = Tensor.from(new int[][][]{{{1}, {2}, {3}}, {{4}, {5}, {6}}, {{7}, {8}, {9}}, {{10}, {11}, {12}}});
+        assertEquals(t2, t1.permuteDims(1, 2, 0));
+        assertEquals(t3, t1.permuteDims(2, 0, 1));
+        assertEquals(t1, t1.permuteDims(1, -1, 0).permuteDims(-1, 0, 1));
+        assertThrows(IndexOutOfBoundsException.class, () -> t1.permuteDims(0, 1, 3));
+        assertThrows(IllegalArgumentException.class, () -> t1.permuteDims(0, 1, 1));
+        assertThrows(IllegalArgumentException.class, () -> t1.permuteDims(0, 1));
+        assertThrows(IllegalArgumentException.class, () -> t1.permuteDims(0, 1, 2, 0));
+    }
+
+    @Test void testMoveDims() {
+        Tensor t1 = Tensor.from(new int[][][]{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        Tensor t2 = Tensor.from(new int[][][] {{{1, 2, 3}}, {{4, 5, 6}}, {{7, 8, 9}}, {{10, 11, 12}}});
+        Tensor t3 = Tensor.from(new int[][][]{{{1}, {2}, {3}}, {{4}, {5}, {6}}, {{7}, {8}, {9}}, {{10}, {11}, {12}}});
+        Tensor t4 = Tensor.from(new int[][][]{{{1, 4, 7, 10}}, {{2, 5, 8, 11}}, {{3, 6, 9, 12}}});
+        assertEquals(t2, t1.moveAxis(0, 1));
+        assertEquals(t3, t1.moveAxis(0, -1));
+        assertEquals(t4, t1.moveAxis(-1, 0));
+        assertEquals(t2, t1.moveAxis(1, 0));
+    }
+
+    @Test void testUnsqueeze() {
+        Tensor t = Tensor.from(new int[][][]{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        assertEquals(Tensor.from(new int[] {1, 1, 4, 3}), t.unsqueeze(0).shape());
+        assertEquals(Tensor.from(new int[] {1, 4, 3, 1}), t.unsqueeze(-1).shape());
+        assertEquals(Tensor.from(new int[] {1, 4, 3, 1, 1}), t.unsqueeze(-1, -1).shape());
+        assertEquals(Tensor.from(new int[] {1, 4, 1, 1, 3}), t.unsqueeze(2, 2).shape());
+        assertEquals(Tensor.from(new int[] {1, 4, 1, 1, 1, 1, 1, 3, 1}), t.unsqueeze(2, 2, 2, 2, 2, 8).shape());
+        assertEquals(Tensor.from(new int[] {1, 1, 4, 1, 3}), t.unsqueeze(1, 3).shape());
+        assertEquals(Tensor.from(new int[] {1, 1, 4, 3, 1}), t.unsqueeze(1, 4).shape());
+        assertThrows(IndexOutOfBoundsException.class, () -> t.unsqueeze(4, 4));
+    }
+
+    @Test void testTranspose() {
+        Tensor t1 = Tensor.from(new int[][][]{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        Tensor t2 = Tensor.from(new int[][][] {{{1, 4, 7, 10}, {2, 5, 8, 11}, {3, 6, 9, 12}}});
+        assertEquals(t1, t2.t());
+        assertEquals(t2, t1.t());
+        assertEquals(t1, t1.t().t());
+        Tensor t = Tensor.from(new int[][] {{0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}, {9}});
+        assertEquals(t, Tensor.range(10).t());
+    }
+
+    @Test void randomTestingFunction() {
+        Tensor t = Tensor.from(new int[][][]{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
+        System.out.println(t.shape());
+        System.out.println(t.unsqueeze(2, 0).shape());
+        System.out.println(t.unsqueeze(0, 2).shape());
     }
 }

@@ -9,6 +9,8 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
 import java.util.function.BinaryOperator;
+import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.function.UnaryOperator;
 
 public class Tensor implements Iterable<Float> {
@@ -27,6 +29,7 @@ public class Tensor implements Iterable<Float> {
     private final float[] data;
     private final int[] shape;
     private final int[] skips;
+    protected final Tensor base;
 
     /** A constant Tensor containing a single dimension of zero size */
     public static final Tensor EMPTY = new Tensor(new float[0], new int[] {0});
@@ -40,11 +43,29 @@ public class Tensor implements Iterable<Float> {
                 throw new IllegalArgumentException(String.format("Attempted to create Tensor of shape %s, but cannot " +
                         "create Tensor with negative dimensions", Arrays.toString(shape)));
         dims = shape.length;
+        base = null;
         skips = new int[dims];
         skips[dims - 1] = 1;
         for(int i = dims - 2; i >= 0; i--)
             skips[i] = skips[i+1] * shape[i+1];
         size = skips[0] * shape[0];
+    }
+
+    protected Tensor(Tensor base, int @NotNull [] shape) {
+        this.data = null;
+        // This is copied to ensure it can't be changed externally
+        this.shape = Arrays.copyOf(shape, shape.length);
+        int s = 1;
+        for(int i : shape) {
+            if (i < 0)
+                throw new IllegalArgumentException(String.format("Attempted to create Tensor of shape %s, but cannot " +
+                        "create Tensor with negative dimensions", Arrays.toString(shape)));
+            s *= i;
+        }
+        size = s;
+        dims = shape.length;
+        this.base = base;
+        skips = null;
     }
 
     /**
@@ -77,12 +98,8 @@ public class Tensor implements Iterable<Float> {
      */
     @Contract("_ -> new")
     public static @NotNull Tensor zeros(Tensor shape) {
-        try {
-            return zeros(shape.toIntArray());
-        } catch(IllegalArgumentException e) {
-            e.fillInStackTrace();
-            throw e;
-        }
+        try { return zeros(shape.toIntArray()); }
+        catch(IllegalArgumentException e) { throw (RuntimeException) e.fillInStackTrace(); }
     }
 
     /**
@@ -109,10 +126,7 @@ public class Tensor implements Iterable<Float> {
             Tensor t = zeros(shape);
             Arrays.fill(t.data, 1);
             return t;
-        } catch(IllegalArgumentException e) {
-            e.fillInStackTrace();
-            throw e;
-        }
+        } catch(IllegalArgumentException e) { throw (RuntimeException) e.fillInStackTrace(); }
     }
 
     /**
@@ -282,13 +296,8 @@ public class Tensor implements Iterable<Float> {
 
         // Create Tensor, and rethrow the error if it is raised in fill
         Tensor result = zeros(shape);
-        try {
-            result.fill(array, 0, 0);
-        } catch(IllegalArgumentException e) {
-            e.fillInStackTrace();
-            throw e;
-        }
-
+        try { result.fill(array, 0, 0); }
+        catch(IllegalArgumentException e) { throw (RuntimeException) e.fillInStackTrace(); }
         return result;
     }
 
@@ -475,6 +484,23 @@ public class Tensor implements Iterable<Float> {
     }
 
     /**
+     * Converts the Tensor into a flattened array of arbitrary type, using a generator and converter function. The
+     * generator function is used to initialise the array, and the converter is used to convert the elements from floats
+     * to the desired type. For example, to convert the Tensor {@code t} into a flattened array of type
+     * {@code BigDecimal}, you would use {@code t.toArray(BigDecimal[]::new, BigDecimal::valueOf)}.
+     * @return An array of type T containing the values in the Tensor, flattened into a single dimension, using the
+     * given conversion
+     * @since 0.1.2
+     */
+    public <T> T[] toArray(IntFunction<T[]> generator, Function<Float, T> converter) {
+        T[] arr = generator.apply(size);
+        int i = 0;
+        for(float f : this)
+            arr[i++] = converter.apply(f);
+        return arr;
+    }
+
+    /**
      * Converts the Tensor into a flattened int array. Values are cast to int, meaning values are all rounded down
      * towards negative infinity
      * @return An int array containing the values in the Tensor, flattened into a single dimension
@@ -525,19 +551,15 @@ public class Tensor implements Iterable<Float> {
      * @since 0.1.0
      */
     public int shape(int axis) {
-        if(axis < -dims || axis >= dims)
-            throw new IndexOutOfBoundsException(String.format(
-                    "Axis %d out of bounds for Tensor with %d dimensions", axis, dims));
-        if(axis < 0)
-            axis += dims;
-        return shape[axis];
+        try { return shape[validateAxis(axis)]; }
+        catch (IndexOutOfBoundsException e) { throw (RuntimeException) e.fillInStackTrace(); }
     }
 
     /**
-     * Converts a set of indices to a flattened index for use in the data array. This method performed no error
+     * Converts a set of indices to a flattened index for use in the data array. This method performs no error
      * checking. It is the responsibility of the calling method to ensure arguments are valid. There must be the same
-     * number of indices as number of dimensions, and each index at position i must be in the open interval
-     * [0, shape(i)).
+     * number of indices as number of dimensions, and each index at position {@code i} must be in the open interval
+     * {@code [0, shape(i))}.
      *
      * @param indices indices to convert into a flattened index
      * @return Flattened version of the provided indices
@@ -552,35 +574,43 @@ public class Tensor implements Iterable<Float> {
 
     /**
      * Checks whether the provided indices are valid, or whether an exception should be raised. Indices are valid if
-     * and only if there are the same number of indices as dimensions, and each index at position i is in the open
-     * interval [-shape(i), shape(i)). Negative indices are also converted to the equivalent positive indices, so after
-     * calling this method, there will no longer be negative indices in the array
+     * there are the same number of indices as dimensions, and each index at position {@code i} is in the open
+     * interval [-shape(i), shape(i)), or if there is a single index in the open interval [-size, size).
+     * Negative indices are also converted to the equivalent positive indices, so after
+     * calling this method, there will no longer be negative indices in the array. The resulting array of indices is
+     * returned. The returned array is NOT a reference to the same array, which is necessary so that the original
+     * indices are not changed in internalGet/internalSet
      * @param indices Array of indices to check the validity of
-     * @return If the indices are valid, null is returned. Otherwise, the appropriate exception is returned
+     * @return The same array of indices, with positive indices
      * @since 0.1.2
      */
-    private RuntimeException validateIndices(int[] indices) {
-        if(indices.length > dims)
-            return new IllegalArgumentException(String.format("Too many indices supplied. " +
-                    "Tensor is %d-dimensional but %d were indexed", dims, indices.length));
-        if(indices.length < dims)
-            return new IllegalArgumentException(String.format("Not enough indices supplied. " +
-                    "Tensor is %d-dimensional but %d were indexed", dims, indices.length));
-        for(int i = 0; i < dims; i++) {
-            if(indices[i] < -shape(i) || indices[i] >= shape(i))
-                return new IndexOutOfBoundsException(String.format(
-                        "Index %d is out of bounds for axis %d with size %d", indices[i], i, shape(i)));
-            if(indices[i] < 0)
-                indices[i] += shape(i);
+    private int[] validateIndices(int[] indices) {
+        if(indices.length != 1 || dims == 1) {
+            if (indices.length > dims)
+                throw new IllegalArgumentException(String.format("Too many indices supplied. " +
+                        "Tensor is %d-dimensional but %d were indexed", dims, indices.length));
+            if (indices.length < dims)
+                throw new IllegalArgumentException(String.format("Not enough indices supplied. " +
+                        "Tensor is %d-dimensional but %d were indexed", dims, indices.length));
+            indices = Arrays.copyOf(indices, dims);
+            for (int i = 0; i < dims; i++) {
+                if (indices[i] < -shape(i) || indices[i] >= shape(i))
+                    throw new IndexOutOfBoundsException(String.format(
+                            "Index %d is out of bounds for axis %d with size %d", indices[i], i, shape[i]));
+                if (indices[i] < 0)
+                    indices[i] += shape[i];
+            }
+            return indices;
         }
-        return null;
+        // Otherwise, indices only contains one element, so we are indexing the flattened array
+        return fromFlatIndex(indices[0]);
     }
 
     /**
-     * Converts the given flattened index into the equivalent non flattened index. Throws an exception if the index is
+     * Converts the given flattened index into the equivalent non-flattened index. Throws an exception if the index is
      * out of bounds. Supports negative indexing, but the returned result will always contain only positive indices
      * @param index The flattened index
-     * @return The equivalent non flattened index
+     * @return The equivalent non-flattened index
      * @since 0.1.2
      */
     private int[] fromFlatIndex(int index) {
@@ -601,47 +631,52 @@ public class Tensor implements Iterable<Float> {
      * Returns the element at the specified index. Negative indexing is supported. If only a single index is provided,
      * then it will be assumed to be a flattened index.
      * <br><br>
-     * An Exception is raised is if {@code indices.length != dims() && indices.length != 1} or if
-     * {@code -shape(i) <= indices[i] < shape(i)}
+     * The indices must satisfy {@code indices.length == dims() && indices.length == 1} and
+     * {@code -shape(i) <= indices[i] < shape(i)}, otherwise an Exception will be raised
+     *
      * @param indices Indices of the element to retrieve
      * @return The element at the specified index
      * @since 0.1.0
      */
     public float get(int @NotNull ... indices) {
-        if(indices.length != 1 || dims == 1) {
-            RuntimeException exception = validateIndices(indices);
-            if(exception != null)
-                throw exception;
-        } else {
-            try {
-                // Indices only contains one element, so we are indexing the flattened array
-                indices = fromFlatIndex(indices[0]);
-            } catch(IndexOutOfBoundsException e) {
-                e.fillInStackTrace();
-                throw e;
-            }
-        }
+        try {indices = validateIndices(indices); }
+        catch(IllegalArgumentException | IndexOutOfBoundsException e)
+        { throw (RuntimeException) e.fillInStackTrace(); }
+
         return internalGet(indices);
     }
 
     /**
-     * This method should never be called by anything other than the get method. Only valid, positive indices will be
-     * passed into this method so no error checking is required. Subclasses of Tensor should override this method to
-     * change the behaviour of how elements are indexed
+     * Controls how the indices used to index this Tensor are mapped to the indices used to index the underlying Tensor.
+     * This method is overridden by subclasses of Tensor to create a view into another Tensor. Subclasses overriding
+     * this method can safely assume that the provided indices are valid. The length of indices will be equal to
+     * {@code dims} and each element at index {@code i} is in the open interval [0, shape(i)). These checks are all
+     * done prior to the call to {@code view}, so no checks need to be done in this method
+     * @param indices The indices to convert to the underlying Tensor's indices
+     * @return The indices used to access the relevant element in the underlying Tensor
+     * @since 0.1.2
+     */
+    protected int[] view(int[] indices) { return indices; }
+
+    /**
+     * This method should only be called from inside the Tensor class or its subclasses. Only valid, positive indices
+     * should be passed into this method so, it is the requirement of the caller to perform error checking and negative
+     * to positive index conversions. The indices may be edited inside this function, so if the indices array is needed
+     * after this function call, it should be copied to ensure the original values are maintained
      * @param indices Array of the indices of the element to retrieve
      * @return The element at the given index
      * @since 0.1.2
      */
     protected float internalGet(int[] indices) {
-        return data[toFlatIndex(indices)];
+        return data == null ? base.internalGet(view(indices)) : data[toFlatIndex(view(indices))];
     }
 
     /**
      * Sets the element at the specified index to the given value. Negative indexing is supported. If only a single
      * index is given, it is assumed to be a flattened index
      * <br><br>
-     * An Exception is raised is if {@code indices.length != dims() && indices.length != 1} or if
-     * {@code -shape(i) <= indices[i] < shape(i)}
+     * The indices must satisfy {@code indices.length == dims() && indices.length == 1} and
+     * {@code -shape(i) <= indices[i] < shape(i)}, otherwise an Exception will be raised
      *
      * @param value Value to set the element to
      * @param indices Indices of the element to set
@@ -649,50 +684,43 @@ public class Tensor implements Iterable<Float> {
      * @since 0.1.0
      */
     public Tensor set(float value, int... indices) {
-        if(indices.length != 1 || dims == 1) {
-            RuntimeException exception = validateIndices(indices);
-            if(exception != null)
-                throw exception;
-        } else {
-            try {
-                // Indices only contains one element, so we are indexing the flattened array
-                indices = fromFlatIndex(indices[0]);
-            } catch(IndexOutOfBoundsException e) {
-                e.fillInStackTrace();
-                throw e;
-            }
-        }
+        try {indices = validateIndices(indices); }
+        catch(IllegalArgumentException | IndexOutOfBoundsException e)
+        { throw (RuntimeException) e.fillInStackTrace(); }
+
         internalSet(value, indices);
         return this;
     }
 
     /**
-     * This method should never be called by anything other than the set method. Only valid, positive indices will be
-     * passed into this method so no error checking is required. Subclasses of Tensor should override this method to
-     * change the behaviour of how elements are indexed
-     * @param value The value to set the given element to
+     * This method should only be called from inside the Tensor class or its subclasses. Only valid, positive indices
+     * should be passed into this method so, it is the requirement of the caller to perform error checking and negative
+     * to positive index conversions. The indices may be edited inside this function, so if the indices array is needed
+     * after this function call, it should be copied to ensure the original values are maintained
+     * @param value the value to set the element to
      * @param indices Array of the indices of the element to set
      * @since 0.1.2
      */
     protected void internalSet(float value, int[] indices) {
-        data[toFlatIndex(indices)] = value;
+        if(data == null)
+            base.internalSet(value, view(indices));
+        else
+            data[toFlatIndex(view(indices))] = value;
     }
 
     /**
-     * Returns a view into this Tensor, where the given indices from the given axis have been removed.
+     * Returns the result of deleting the given elements from the given elements. The result shares the same underlying
+     * memory as the original Tensor, so changing one will change the other.
      * Negative indexing is supported. Exceptions are thrown if the axis is out of bounds, the indices are out of
      * bounds, or there are duplicate indices
      * @param axis The axis to delete indices from
      * @param indices The indices to delete
      * @return The same Tensor, with the given elements deleted
+     * @since 0.1.2
      */
     public Tensor delete(int axis, int... indices) {
-        // Error checking on axis
-        if(axis < -dims || axis >= dims)
-            throw new IndexOutOfBoundsException(String.format(
-                    "Axis %d out of bounds for Tensor with %d dimensions", axis, dims));
-        if(axis < 0)
-            axis += dims;
+        try { axis = validateAxis(axis); }
+        catch (IndexOutOfBoundsException e) { throw (RuntimeException) e.fillInStackTrace(); }
 
         // Copy array, so it can't be edited externally
         int[] array = Arrays.copyOf(indices, indices.length);
@@ -713,6 +741,142 @@ public class Tensor implements Iterable<Float> {
         }
         // Arguments should now be valid
         return new DeletionView(this, axis, array);
+    }
+
+    /**
+     * Swaps the two given axes in the Tensor. For example, if a = b.swapAxes(1, 3), then
+     * a.get(w, x, y, z) == b.get(w, z, y, x) for all valid w, x, y, z. The resulting Tensor shares the same underlying
+     * memory with the original, so changing one will change the other. Negative indexing is supported
+     * @param axis1 The first axis to swap
+     * @param axis2 The second axis to swap
+     * @return The result of swapping axis1 and axis2
+     * @since 0.1.2
+     */
+    public Tensor swapAxes(int axis1, int axis2) {
+        try {
+            axis1 = validateAxis(axis1);
+            axis2 = validateAxis(axis2);
+        } catch (IndexOutOfBoundsException e) { throw (RuntimeException) e.fillInStackTrace(); }
+        if(axis1 == axis2)
+            return this;
+        int[] permutation = new int[dims];
+        for(int i = 0; i < dims; i++)
+            permutation[i] = i;
+        permutation[axis1] = axis2;
+        permutation[axis2] = axis1;
+        return new PermutedDimsView(this, permutation);
+    }
+
+    /**
+     * Swaps the last two axes of the Tensor. If the Tensor is treated as a collection of matrices, with the final two
+     * dimensions indexing the rows and columns respectively, then this is equivalent to the standard matrix transpose.
+     * If the Tensor is one dimensional, this inserts an extra dimension in position 0. So a one dimensional Tensor gets
+     * converted into a column vector.
+     * @return The same Tensor, with the final two dimensions swapped
+     * @since 0.1.2
+     */
+    public Tensor t() {
+        if(dims == 1)
+            return unsqueeze(1);
+        return swapAxes(-1, -2);
+    }
+
+    /**
+     * Permutes the dimensions of the Tensor by the given permutation. The value at index i in the permutation indicates
+     * the location dimension {@code i} is moved to in the permutation. For example, if t has a shape of (5, 6, 3), then
+     * t.permute(1, 2, 0) will have a shape of (3, 5, 6). The permutation provided must contain all the integers from
+     * 0 to dims-1 exactly once. The resulting Tensor has the same underlying memory as the original, so changing one
+     * will change the other.
+     * @param permutation The permutation to apply to the dimensions of the Tensor
+     * @return The result of applying the permutation to the dimensions of the Tensor
+     * @since 0.1.2
+     */
+    public Tensor permuteDims(int @NotNull ... permutation) {
+        if(permutation.length != dims)
+            throw new IllegalArgumentException(String.format("%d permutation dims provided to Tensor with %d dims",
+                    permutation.length, dims));
+        boolean[] present = new boolean[dims];
+        permutation = Arrays.copyOf(permutation, dims);
+        for(int i = 0; i < dims; i++) {
+            try { permutation[i] = validateAxis(permutation[i]); }
+            catch(IndexOutOfBoundsException e) { throw (RuntimeException) e.fillInStackTrace(); }
+            if(present[permutation[i]])
+                throw new IllegalArgumentException(String.format("Dimension %d repeated in permuteDims",
+                        permutation[i]));
+            present[permutation[i]] = true;
+        }
+        return new PermutedDimsView(this, permutation);
+    }
+
+    /**
+     * Moves the axis at source to the destination axis. Other axes remain in their original order. The resulting Tensor
+     * has the same underlying memory as the original, so changing one will change the other.
+     * @param source The axis to move
+     * @param destination The location to move the axis to
+     * @return The Tensor that is the result of moving the given axis to the given location
+     * @since 0.1.2
+     */
+    public Tensor moveAxis(int source, int destination) {
+        try {
+            source = validateAxis(source);
+            destination = validateAxis(destination);
+        } catch(IndexOutOfBoundsException e) { throw (RuntimeException) e.fillInStackTrace(); }
+        if(source == destination)
+            return this;
+        int[] permutation = new int[dims];
+        int offset = 0;
+        for(int i = 0; i < dims; i++) {
+            if(i == (source > destination ? destination : source + 1))
+                offset = (int)Math.signum(source - destination);
+            if(i == (source > destination ? source : destination + 1))
+                offset = 0;
+            permutation[i] = i + offset;
+        }
+        permutation[source] = destination;
+        return new PermutedDimsView(this, permutation);
+    }
+
+    /**
+     * Inserts axes of size one at the given locations. The provided axes represent the location of the dimensions in
+     * the final Tensor, meaning the given axis don't necessarily need to be within the bounds of this Tensor's dims,
+     * but do need to be within the bounds of the final Tensors dims. Specifically, all axes need to be in the open
+     * interval {@code [-dims - axes.length, dims + axes.length)}. The only exception to this is if there are duplicate
+     * axes. In this case, subsequent occurrences of the same axis are inserted after the previous one. This, may result
+     * in an error, if the bounds stated above are used. For example, if {@code t} is 2 dimensional, and
+     * {@code t.unsqueeze(3, 3)} is called, then an error would be thrown. The resulting Tensor would have 4 dimensions,
+     * so it is valid to insert a dimension into axes 3, however, the second instance of 3 would then be inserted after
+     * this, into dimension 4, which is out of bounds. However, {@code t.unsqueeze(2, 2)} is valid, and would result in
+     * a Tensor of shape {@code [x, y, 1, 1]}, where {@code [x, y]} is the original Tensor shape
+     * @param axes The locations to insert the singleton dimensions
+     * @return The Tensor that is the result if inserting the dimensions
+     * @since 0.1.2
+     */
+    public Tensor unsqueeze(int... axes) {
+        axes = Arrays.copyOf(axes, axes.length);
+        for(int i = 0; i < axes.length; i++) {
+            if(axes[i] < -dims-1-i || axes[i] > dims+i)
+                throw new IndexOutOfBoundsException(String.format(
+                        "Axis %d out of bounds for Tensor with %d dimensions", axes[i], dims+i));
+            axes[i] = axes[i] < 0 ? axes[i] + dims+1+i : axes[i];
+        }
+        Arrays.sort(axes);
+        for(int i = 1; i < axes.length; i++)
+            axes[i] = Math.max(axes[i-1]+1, axes[i]);
+        return new UnsqueezeView(this, axes);
+    }
+
+    /**
+     * Used to validate an axis value provided to a method. If the axis is out of bounds, an IndexOutOfBoundsException
+     * is thrown. Otherwise, the axis is converted to the equivalent positive axis and returned
+     * @param axis The axis to validate
+     * @return The equivalent positive axis
+     * @since 0.1.2
+     */
+    private int validateAxis(int axis) {
+        if(axis < -dims || axis >= dims)
+            throw new IndexOutOfBoundsException(String.format(
+                    "Axis %d out of bounds for Tensor with %d dimensions", axis, dims));
+        return axis < 0 ? axis + dims : axis;
     }
 
     /**
@@ -888,6 +1052,21 @@ public class Tensor implements Iterable<Float> {
         Tensor result = Tensor.zerosLike(this);
         for(int[] i : indices)
             result.set(function.apply(get(i)), i);
+        return result;
+    }
+
+    /**
+     * Returns the Tensor that is the result of applying the given function to each element separately in this Tensor.
+     * The function takes two arguments, (i, x), where i is the flattened index of the element, and x is the value of
+     * the element
+     * @param function the function to apply to each element
+     * @return The result of applying the function to each element in this Tensor
+     * @since 0.1.2
+     */
+    public Tensor apply(BinaryOperator<Float> function) {
+        Tensor result = Tensor.zerosLike(this);
+        for(int[] i : indices)
+            result.set(function.apply((float)toFlatIndex(i), get(i)), i);
         return result;
     }
 
@@ -1138,11 +1317,9 @@ public class Tensor implements Iterable<Float> {
         @Override
         public @NotNull Float next() {
             try {
-                return get(iterator.next());
-            } catch(NoSuchElementException e) {
-                e.fillInStackTrace();
-                throw e;
-            }
+                // We can use internal get, as we can be certain that the indices are valid (no error checking required)
+                return internalGet(iterator.next());
+            } catch(NoSuchElementException e) { throw (RuntimeException) e.fillInStackTrace(); }
         }
     }
 }
@@ -1151,7 +1328,6 @@ class DeletionView extends Tensor {
 
     private final int axis;
     private final int[] deletedIndices;
-    private final Tensor base;
 
     /**
      * Creates a view into the base Tensor, with the given indices from the given axis deleted. These elements are not
@@ -1163,39 +1339,106 @@ class DeletionView extends Tensor {
      * @param base The base Tensor to delete elements from
      * @param axis The axis to delete the elements from
      * @param deletedIndices The indices of the elements to delete
+     * @since 0.1.2
      */
-    DeletionView(Tensor base, int axis, int... deletedIndices) {
-        super(null, base.shape().set(base.shape(axis) - deletedIndices.length, axis).toIntArray());
-        this.base = base;
+    DeletionView(Tensor base, int axis, int @NotNull ... deletedIndices) {
+        super(base, base.shape().set(base.shape(axis) - deletedIndices.length, axis).toIntArray());
         this.axis = axis;
         this.deletedIndices = deletedIndices;
         for(int i = 0; i < deletedIndices.length; i++)
             this.deletedIndices[i] -= (i+1);
     }
 
-    private int getOffset(int[] indices) {
+    @Override
+    protected int[] view(int @NotNull [] indices) {
         int offset = Arrays.binarySearch(deletedIndices, indices[axis]);
         while(offset > 0 && offset-1 < deletedIndices.length && deletedIndices[offset-1] == deletedIndices[offset])
             offset--;
         if(offset < 0)
             offset = -offset - 1;
-        return offset;
+        indices[axis] += offset;
+        return indices;
+    }
+}
+
+class PermutedDimsView extends Tensor {
+
+    private final int[] indexPermutation;
+
+    /**
+     * Creates a view into the base Tensor, with the dimensions permuted by the given permutation. This does not create
+     * a new Tensor, but instead creates a view into the original Tensor. The permutation array should be copied before
+     * being passed into this class, to ensure it is not changed externally. No error checking is performed, it is the
+     * responsibility of the caller to perform error checking
+     * @param base The base Tensor to delete elements from
+     * @param permutation The permutation of the Tensors dimensions
+     * @since 0.1.2
+     */
+    PermutedDimsView(@NotNull Tensor base, int[] permutation) {
+        super(base, computeShape(base, permutation));
+        this.indexPermutation = permutation;
+    }
+
+    private static int @NotNull [] computeShape(Tensor base, int @NotNull [] permutation) {
+        int[] shape = new int[permutation.length];
+        for(int i = 0; i < permutation.length; i++)
+            shape[permutation[i]] = base.shape(i);
+        return shape;
     }
 
     @Override
-    public float internalGet(int @NotNull ... indices) {
-        int offset = getOffset(indices);
-        indices[axis] += offset;
-        float val = base.internalGet(indices);
-        indices[axis] -= offset;
-        return val;
+    protected int[] view(int @NotNull [] indices) {
+        int[] internalIndices = new int[indices.length];
+        for(int i = 0; i < indices.length; i++)
+            internalIndices[i] = indices[indexPermutation[i]];
+        return internalIndices;
+    }
+}
+
+// TODO squeeze and unsqueeze
+class UnsqueezeView extends Tensor {
+
+    private final int[] insertedAxes;
+
+    /**
+     * Creates a view into the base Tensor, with the new axes of size one inserted at the given locations. This does not
+     * create a new Tensor, but instead creates a view into the original Tensor. The insertedAxes array should be copied
+     * before being passed into this class, to ensure it is not changed externally. No error checking is performed, it
+     * is the responsibility of the caller to perform error checking. The insertedAxes are expected to be sorted.
+     * Behaviour is not defined if insertedAxes is not in ascending order
+     * @param base The base Tensor to delete elements from
+     * @param insertedAxes The locations of the axes to insert
+     * @since 0.1.2
+     */
+    UnsqueezeView(@NotNull Tensor base, int[] insertedAxes) {
+        super(base, computeShape(base, insertedAxes));
+        this.insertedAxes = insertedAxes;
+    }
+
+    private static int @NotNull [] computeShape(@NotNull Tensor base, int @NotNull [] insertedAxes) {
+        int[] shape = new int[base.dims + insertedAxes.length];
+        int insAxesIdx = 0, shapeIdx = 0;
+        for(int i = 0; i < shape.length; i++) {
+            if (insAxesIdx < insertedAxes.length && i == insertedAxes[insAxesIdx]) {
+                shape[i] = 1;
+                insAxesIdx++;
+            } else
+                shape[i] = base.shape(shapeIdx++);
+        }
+        return shape;
     }
 
     @Override
-    public void internalSet(float value, int... indices) {
-        int offset = getOffset(indices);
-        indices[axis] += offset;
-        base.internalSet(value, indices);
-        indices[axis] -= offset;
+    protected int[] view(int[] indices) {
+        int[] newIndices = new int[base.dims];
+        int insAxesIdx = 0, oldIdx = 0;
+        for(int i = 0; i < newIndices.length; i++) {
+            if(insAxesIdx < insertedAxes.length && i == insertedAxes[insAxesIdx]) {
+                oldIdx++;
+                insAxesIdx++;
+            }
+            newIndices[i] = indices[oldIdx++];
+        }
+        return newIndices;
     }
 }
