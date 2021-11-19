@@ -5,6 +5,7 @@ import org.jetbrains.annotations.Contract;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.NoSuchElementException;
@@ -838,7 +839,7 @@ public class Tensor implements Iterable<Float> {
 
     /**
      * Inserts axes of size one at the given locations. The provided axes represent the location of the dimensions in
-     * the final Tensor, meaning the given axis don't necessarily need to be within the bounds of this Tensor's dims,
+     * the final Tensor, meaning the given axes don't necessarily need to be within the bounds of this Tensor's dims,
      * but do need to be within the bounds of the final Tensors dims. Specifically, all axes need to be in the open
      * interval {@code [-dims - axes.length, dims + axes.length)}. The only exception to this is if there are duplicate
      * axes. In this case, subsequent occurrences of the same axis are inserted after the previous one. This, may result
@@ -863,6 +864,48 @@ public class Tensor implements Iterable<Float> {
         for(int i = 1; i < axes.length; i++)
             axes[i] = Math.max(axes[i-1]+1, axes[i]);
         return new UnsqueezeView(this, axes);
+    }
+
+    /**
+     * Returns a view into the Tensor with all dimensions of size 1 removed. If there are no singleton dimensions, then
+     * a reference to this Tensor is returned
+     *
+     * @return A view into the Tensor with all dimensions of size 1 removed
+     * @since 0.1.2
+     */
+    public Tensor squeeze() {
+        ArrayList<Integer> singletons = new ArrayList<>(dims);
+        for(int i = 0; i < dims; i++)
+            if(shape(i) == 1)
+                singletons.add(i);
+        if(singletons.size() == 0)
+            return this;
+        return new SqueezeView(this, singletons.stream().mapToInt(i -> i).toArray());
+    }
+
+    /**
+     * Returns a view into the Tensor with the given singleton axes removed. If the given axes do not have a size of 1,
+     * and exception is raised. Negative indexing of axes is supported. Each axis must be in the open interval
+     * {@code [-dims, dims)}
+     * @param axes The singleton axes to remove
+     * @return A view into the Tensor with the given axes removed
+     * @throws IndexOutOfBoundsException if any of the given axes are out of bounds
+     * @throws IllegalArgumentException if any of the axes have a size larger than 1
+     * @since 0.1.2
+     */
+    public Tensor squeeze(int... axes) {
+        axes = Arrays.copyOf(axes, axes.length);
+        for(int i = 0; i < axes.length; i++) {
+            if(axes[i] < -dims || axes[i] >= dims)
+                throw new IndexOutOfBoundsException(String.format(
+                        "Axis %d out of bounds for Tensor with %d dimensions", axes[i], dims));
+            if(shape(axes[i]) != 1)
+                throw new IllegalArgumentException(String.format("Axis %d has a size of %d, " +
+                        "but only singleton axes can be removed", axes[i], shape(axes[i])));
+            axes[i] = axes[i] < 0 ? axes[i] + dims : axes[i];
+        }
+        Arrays.sort(axes);
+        return new SqueezeView(this, axes);
     }
 
     /**
@@ -1088,6 +1131,28 @@ public class Tensor implements Iterable<Float> {
         for(float f : this)
             value = function.apply(value, f);
         return value;
+    }
+
+    /**
+     * Returns the result of applying the given function element wise to the elements of the two Tensors. The two
+     * Tensors must have the same shape, and the resulting Tensor will also have this shape
+     *
+     * Future plans: The two tensors can be of different shapes, provided they can be broadcast into the same shape
+     * @param t1 The first Tensor to apply the binary operator to
+     * @param t2 The second Tensor to apply the binary operator to
+     * @param function The function to apply to the two Tensors
+     * @return The result of applying the function to the Tensors
+     * @throws IllegalArgumentException If the shape of the two input Tensors is different
+     * @since 0.1.2
+     */
+    public static @NotNull Tensor apply(@NotNull Tensor t1, @NotNull Tensor t2, BinaryOperator<Float> function) {
+        if(!t1.shape().equals(t2.shape()))
+            throw new IllegalArgumentException(String.format("Tensors must have the same shape. " +
+                    "Tensor 1 has shape %s and Tensor 2 has shape %s", t1.shape(), t2.shape()));
+        Tensor result = zerosLike(t1);
+        for(int[] i : t1.indices)
+            result.set(function.apply(t1.get(i), t2.get(i)), i);
+        return result;
     }
 
     /**
@@ -1395,7 +1460,6 @@ class PermutedDimsView extends Tensor {
     }
 }
 
-// TODO squeeze and unsqueeze
 class UnsqueezeView extends Tensor {
 
     private final int[] insertedAxes;
@@ -1431,13 +1495,59 @@ class UnsqueezeView extends Tensor {
     @Override
     protected int[] view(int[] indices) {
         int[] newIndices = new int[base.dims];
-        int insAxesIdx = 0, oldIdx = 0;
-        for(int i = 0; i < newIndices.length; i++) {
-            if(insAxesIdx < insertedAxes.length && i == insertedAxes[insAxesIdx]) {
-                oldIdx++;
+        int insAxesIdx = 0, newIdx = 0;
+        for(int i = 0; i < indices.length; i++) {
+            if (insAxesIdx < insertedAxes.length && i == insertedAxes[insAxesIdx])
                 insAxesIdx++;
-            }
-            newIndices[i] = indices[oldIdx++];
+            else
+                newIndices[newIdx++] = indices[i];
+        }
+        return newIndices;
+    }
+}
+
+class SqueezeView extends Tensor {
+
+    private final int[] removedAxes;
+
+    /**
+     * Creates a view into the base Tensor, given axes removed. This does not create a new Tensor, but instead creates
+     * a view into the original Tensor. The removedAxes array should be copied before being passed into this class,
+     * to ensure it is not changed externally. It is expected that only dimensions of size 1 are removed, however, this
+     * is not checked so it is possible to remove non singleton dimensions. In this case, the first element along this
+     * dimension is taken, and the rest are discarded. No error checking is performed, it is the responsibility of the
+     * caller to perform error checking. The removedAxes are expected to be sorted.
+     * @param base The base Tensor to delete elements from
+     * @param removedAxes The locations of the axes to insert
+     * @since 0.1.2
+     */
+    SqueezeView(@NotNull Tensor base, int[] removedAxes) {
+        super(base, computeShape(base, removedAxes));
+        this.removedAxes = removedAxes;
+    }
+
+    private static int @NotNull [] computeShape(@NotNull Tensor base, int @NotNull [] removedAxes) {
+        int[] shape = new int[base.dims - removedAxes.length];
+        int remAxesIdx = 0, shapeIdx = 0;
+        for(int i = 0; i < base.dims; i++) {
+            if(remAxesIdx < removedAxes.length && i == removedAxes[remAxesIdx])
+                remAxesIdx++;
+            else
+                shape[shapeIdx++] = base.shape(i);
+        }
+        return shape;
+    }
+
+    @Override
+    protected int[] view(int[] indices) {
+        int[] newIndices = new int[base.dims + removedAxes.length];
+        int remAxesIdx = 0, shapeIdx = 0;
+        for(int i = 0; i < newIndices.length; i++) {
+            if (remAxesIdx < removedAxes.length && i == removedAxes[remAxesIdx]) {
+                newIndices[i] = 1;
+                remAxesIdx++;
+            } else
+                newIndices[i] = base.shape(shapeIdx++);
         }
         return newIndices;
     }

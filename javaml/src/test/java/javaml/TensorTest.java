@@ -143,6 +143,13 @@ public class TensorTest {
         assertThrows(IndexOutOfBoundsException.class, () -> t.delete(3, 0));
     }
 
+    @Test void testApply() {
+        Tensor t1 = Tensor.range(2, 8, 2);
+        assertEquals(Tensor.from(new int[] {4, 16, 36}), t1.apply(x -> x*x));
+        Tensor t2 = Tensor.range(1, 7, 2);
+        assertEquals(Tensor.from(new int[] {2, 12, 30, }), Tensor.apply(t1, t2, (x, y) -> x*y));
+    }
+
     @Test void testSwapAxes() {
         // (1, 4, 3)
         Tensor t1 = Tensor.from(new int[][][] {{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
@@ -210,10 +217,17 @@ public class TensorTest {
         assertEquals(t, Tensor.range(10).t());
     }
 
+    @Test void testSqueeze() {
+        Tensor t = Tensor.rand(4, 1, 4, 1, 1, 6);
+        assertArrayEquals(new int[] {4, 4, 6}, t.squeeze().shape().toIntArray());
+        assertArrayEquals(new int[] {4, 4, 1, 6}, t.squeeze(1, 4).shape().toIntArray());
+        assertEquals(Tensor.range(10), Tensor.range(10).t().squeeze());
+    }
+
     @Test void randomTestingFunction() {
         Tensor t = Tensor.from(new int[][][]{{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}, {10, 11, 12}}});
         System.out.println(t.shape());
-        System.out.println(t.unsqueeze(2, 0).shape());
-        System.out.println(t.unsqueeze(0, 2).shape());
+        System.out.println(t.unsqueeze(2, 0));
+        System.out.println(t.unsqueeze(0, 2));
     }
 }
